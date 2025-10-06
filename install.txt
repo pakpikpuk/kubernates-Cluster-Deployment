@@ -1,0 +1,180 @@
+install cluster kubernates 3 Control Plane and 3 worker and also 1 HAProxy
+with details:
+ha-proxy: 10.10.10.100
+control-plane-01: 10.10.10.111
+control-plane-02: 10.10.10.112
+control-plane-03: 10.10.10.113
+worker-01: 10.10.10.211
+worker-02: 10.10.10.212
+worker-03: 10.10.10.213
+
+I alredy prepare the server with ubuntu 22.04 fresh install
+first we need to add all node into the /etc/hosts and also disable the swap on all node server
+
+ Add the hostname into all node /etc/hosts
+
+10.10.10.110	ha-proxy
+10.10.10.111	control-plane-01
+10.10.10.112	control-plane-02
+10.10.10.113	control-plane-03
+10.10.10.121	worker-01
+10.10.10.121	worker-02
+10.10.10.121	worker-03
+
+Add to all server node, I already modif the /etc/hosts on all snode server
+
+Next we need to dsable the swap on all node server
+
+# turn off swap
+sudo swapoff -a
+
+Next we need to load some kernel module
+Load the overlay and br_netfilter kernel modules.
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+# Add the necessary sysctl parameters to enable packet forwarding and bridge networking
+
+sudo tee /etc/sysctl.d/kubernetes.conf<<EOF
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+
+# Apply the new sysctl parameters immediately.
+sudo sysctl --system
+
+# Install Containerd
+sudo apt-get install ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo   "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" |   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  
+sudo apt-get update
+sudo apt-get install -y containerd.io
+
+# configure containerd to use the systemd cgroup driver
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+sudo apt-get update
+
+# Download the official Kubernetes GPG key
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# Add the Kubernetes repository to your system's package list
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Install Kubelet, Kubeadm, and Kubectl
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+#Go to HA-Proxy, we need to intall and configure HA-Proxy
+sudo apt install haproxy
+
+-configure haproxy (10.10.10.110)
+sudo nano /etc/haproxy/haproxy.cfg
+add at the bottom configuration file:
+
+frontend kubernetes-api
+  bind 10.10.10.110:6443
+  mode tcp
+  option tcplog
+  default_backend kubernetes-api-servers
+
+backend kubernetes-api-servers
+  mode tcp
+  balance roundrobin
+  server control-plane-01 10.10.10.111:6443 check
+  server control-plane-02 10.10.10.112:6443 check
+  server control-plane-03 10.10.10.113:6443 check
+
+sudo systemctl status haproxy.service
+
+##################################
+# run this on control-plane-01    # 
+###################################
+
+# echo "Step 1: Initialize the Control Plane"
+sudo kubeadm init --control-plane-endpoint="ha-proxy:6443" --upload-certs --pod-network-cidr="192.168.0.0/16"
+
+#########################################################################################################
+Copy the command to join control plane or worker on next step
+#########################################################################################################
+Your Kubernetes control-plane has initialized successfully!
+###################################
+To start using your cluster, you need to run the following as a regular user:
+###################################
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Alternatively, if you are the root user, you can run:
+
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+###################################
+You can now join any number of the control-plane node running the following command on each as root:
+###################################
+  kubeadm join ha-proxy:6443 --token c1cdd4.cp7z5w6k9tx63tyg \
+        --discovery-token-ca-cert-hash sha256:afa06dd50c20191506e818e216ff16b78cd5751914b97e1d73007609a5283c98 \
+        --control-plane --certificate-key b1015bd7d9d84b03f5c2195a4ca63e2e4433f862040fad24b876e4bca0c78f96
+
+Please note that the certificate-key gives access to cluster sensitive data, keep it secret!
+As a safeguard, uploaded-certs will be deleted in two hours; If necessary, you can use
+"kubeadm init phase upload-certs --upload-certs" to reload certs afterward.
+
+###################################
+Then you can join any number of worker nodes by running the following on each as root:
+###################################
+kubeadm join ha-proxy:6443 --token c1cdd4.cp7z5w6k9tx63tyg \
+        --discovery-token-ca-cert-hash sha256:afa06dd50c20191506e818e216ff16b78cd5751914b97e1d73007609a5283c98
+iwan@control-plane-01:~$
+
+
+########################################################################################################
+# Step 2: Configure kubectl
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Step 3: Deploy a CNI Plugin -> Network POD
+kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+
+############################################
+#Now you can add the remaining servers     #
+#to your cluster.                          #
+############################################
+Before run this we need to copy the /etc/kubernates/admin.conf to all control plane node server
+sudo scp /etc/kubernetes/admin.conf iwan@10.10.10.112:/home/iwan/
+# copy the admin.conf to /etc/kubernates/
+sudo cp admin.conf /etc/kubernetes/
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+For Control Plane run:
+sudo kubeadm join ha-proxy:6443 --token c1cdd4.cp7z5w6k9tx63tyg \
+        --discovery-token-ca-cert-hash sha256:afa06dd50c20191506e818e216ff16b78cd5751914b97e1d73007609a5283c98 \
+        --control-plane --certificate-key b1015bd7d9d84b03f5c2195a4ca63e2e4433f862040fad24b876e4bca0c78f96
+
+For Worker node run:
+sudo kubeadm join ha-proxy:6443 --token c1cdd4.cp7z5w6k9tx63tyg \
+        --discovery-token-ca-cert-hash sha256:afa06dd50c20191506e818e216ff16b78cd5751914b97e1d73007609a5283c98		
+		
+Ok now all the node functionally
+This is the process of installation kubernates cluster with 3 control plane and 3 worker node
+Thank you
