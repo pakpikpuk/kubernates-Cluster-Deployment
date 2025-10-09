@@ -1,0 +1,3 @@
+Check Cluster & Nodes
+kubectl cluster-info
+kubectl get nodes -o wide
