@@ -1,3 +1,22 @@
+🟦 1. kubectl Basics
+
+kubectl is how you interact with your Kubernetes cluster.
+
 Check Cluster & Nodes
 kubectl cluster-info
 kubectl get nodes -o wide
+
+Check System Pods
+kubectl get pods -A
+
+Deploy a Test App
+kubectl create deployment nginx --image=nginx
+kubectl get deployments
+kubectl get pods
+
+Expose the App as a Service
+kubectl expose deployment nginx --port=80 --type=NodePort
+kubectl get svc
+
+
+Now you can access NGINX via http://<NodeIP>:<NodePort>.
