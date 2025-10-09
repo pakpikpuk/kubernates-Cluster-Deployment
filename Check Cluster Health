@@ -1,0 +1,9 @@
+Check the cluster Health:
+
+kubectl exec -it etcd-control-plane-01 -n kube-system -- etcdctl   --cacert=/etc/kubernetes/pki/etcd/ca.crt   --cert=/etc/kubernetes/pki/etcd/server.crt   --key=/etc/kubernetes/pki/etcd/server.key   --endpoints=https://10.10.10.111:2379,https://10.10.10.112:2379,https://10.10.10.113:2379   endpoint health
+It will show laike this
+https://10.10.10.111:2379 is healthy: successfully committed proposal: took = 14.859965ms
+https://10.10.10.113:2379 is healthy: successfully committed proposal: took = 15.364721ms
+https://10.10.10.112:2379 is healthy: successfully committed proposal: took = 31.295973ms
+
+Please adjust the etcd-control-plane-01 and also the IP for your control  plane
