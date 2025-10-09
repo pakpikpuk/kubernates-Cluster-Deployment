@@ -27,6 +27,7 @@ Next we need to dsable the swap on all node server
 
 # turn off swap
 sudo swapoff -a
+also Edit /etc/fstab and comment the /etc/fstab for permanent swap disable
 
 Next we need to load some kernel module
 Load the overlay and br_netfilter kernel modules.
