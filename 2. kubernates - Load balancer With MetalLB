@@ -1,0 +1,156 @@
+Load Balancer with MetalLB
+
+To achieve a highly available external IP address for your applications, you must install and configure MetalLB on your Kubernetes cluster. This process involves a few key steps.
+
+Step 1: Install MetalLB
+MetalLB is deployed as a set of pods within your cluster. The simplest and most common way to install it is by applying its manifest file. This will create a metallb-system namespace and deploy all the necessary components.
+
+Run this command on your control plane node:
+
+Bash
+
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
+You can use the latest version from the official GitHub repository, or if you prefer, a specific version. This command will create a Deployment for the controller and a DaemonSet for the speaker pods.
+
+Step 2: Create a Pool of IP Addresses 🗺️
+Next, you need to tell MetalLB which IP addresses it can hand out to your services. For your network setup, you can allocate a small, unused range of IP addresses within your LAN subnet. You can create a file named metallb-ip-pool.yaml with the following content:
+
+YAML
+
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: ip-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 10.10.10.131-10.10.10.139  # Use an unused range in your LAN subnet
+This configuration creates an IP address pool named ip-pool from which MetalLB can assign IPs.
+
+After creating the file, apply it to your cluster:
+
+Bash
+
+kubectl apply -f metallb-ip-pool.yaml
+Step 3: Use an L2 Advertisement 📢
+MetalLB uses a protocol to announce the service IPs to your network. For a simple home lab, Layer 2 (L2) mode is the easiest to configure. It makes a single node on the network responsible for a given IP address by responding to ARP requests.
+
+Create a file named metallb-l2-advertisement.yaml with the following content:
+
+YAML
+
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2-advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - ip-pool
+This tells MetalLB to advertise all IPs from the ip-pool using Layer 2 mode. Apply the file:
+
+Bash
+
+kubectl apply -f metallb-l2-advertisement.yaml
+Step 4: Change Your Service Type to LoadBalancer ⚖️
+Now that MetalLB is configured, you can update your Nginx service to use the LoadBalancer type.
+
+Run the following command to edit your existing service:
+
+Bash
+
+kubectl edit service nginx-web
+Change the line type: NodePort to type: LoadBalancer and save the file. MetalLB will detect this change, assign an IP from the pool you defined, and your service will now have an EXTERNAL-IP.
+
+You can verify the new IP with:
+
+Bash
+
+kubectl get services
+You should see an output similar to this:
+
+iwan@control-plane-01:~$ kubectl get service
+NAME         TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+kubernetes   ClusterIP      10.96.0.1      <none>         443/TCP        5d23h
+nginx        LoadBalancer   10.104.39.21   10.10.10.131   80:30762/TCP   27m
+
+Your EXTERNAL-IP will be the new stable IP you can use for your firewall rule.
+
+Step 5: Update the IPFire Firewall Rule
+Finally, go back to your IPFire firewall and change the Destination (Address) of your port forwarding rule from a single worker node IP to the new MetalLB EXTERNAL-IP (10.10.10.131). This ensures that your single point of external access is now forwarding to a highly available, cluster-aware IP address.
+
+This video provides a great walkthrough on how to set up MetalLB on a Kubernetes cluster. MetalLB : Adding the LoadBalancer service to Kubernetes.
+
+es, you can destroy MetalLB after testing. You can remove all of its components and return your cluster to its previous state.
+
+Step 1: Remove the LoadBalancer Service
+Before you remove MetalLB itself, you must change your service type back to something else, like NodePort. MetalLB will prevent its controller from being removed if there are still services of type LoadBalancer using its IP addresses.
+
+To change your test service back, run:
+
+Bash
+
+kubectl edit service nginx-web
+Change the line type: LoadBalancer back to type: NodePort and save the file.
+
+Step 2: Delete MetalLB Components
+Once the services are no longer using MetalLB, you can delete all of its components using the same manifest file you used to install it.
+
+Run this command on your control plane node:
+
+Bash
+
+kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
+This command will remove the MetalLB controllers, speakers, and the metallb-system namespace.
+
+Step 3: Remove the IP Pools
+Finally, you should remove the IPAddressPool and L2Advertisement objects that you created.
+
+Bash
+
+kubectl delete -f metallb-ip-pool.yaml
+kubectl delete -f metallb-l2-advertisement.yaml
+After these steps, your cluster will be completely free of MetalLB and its configurations. Your nginx-web service will once again be a NodePort service, and you will need to access it using a specific node's IP address and the assigned port, just like you did before.
+
+
+-APP + service in one configuration
+#####################
+deployment-02-app-svc.yaml
+#####################
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-deployment-02
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp2
+  template:
+    metadata:
+      labels:
+        app: myapp2
+    spec:
+      containers:
+      - name: myapp-02
+        image: nginx:1.25
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service-02
+spec:
+  type: LoadBalancer
+  selector:
+    app: myapp2
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+    nodePort: 30007
+
+
