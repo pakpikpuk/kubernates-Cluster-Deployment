@@ -153,4 +153,34 @@ spec:
     targetPort: 80
     nodePort: 30007
 
+################################################################
+# Install and configure metalLB in one command
+################################################################
 
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml
+
+# 2. Configure the IP Address Pool
+# Create a YAML file named 'metallb-config.yaml' with an unused IP range 
+# in your 10.0.11.x subnet (e.g., 10.0.11.200 to 10.0.11.210)
+cat <<EOF > metallb-config.yaml
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: default-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 10.0.11.200-10.0.11.210  # ADJUST THIS RANGE if necessary
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: default-advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - default-pool
+EOF
+
+# 3. Apply the configuration
+kubectl apply -f metallb-config.yaml
