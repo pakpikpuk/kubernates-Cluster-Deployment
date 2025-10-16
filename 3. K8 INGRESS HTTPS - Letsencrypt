@@ -1,0 +1,192 @@
+**0:00** - Intro: Why you need an Ingress Controller
+**[Timestamp 1]** - Installing the NGINX Ingress Controller (using your MetalLB LoadBalancer IP)
+**[Timestamp 2]** - Installing cert-manager (The Automatic Certificate Manager)
+**[Timestamp 3]** - Creating the ClusterIssuer for Let's Encrypt (Staging & Production)
+**[Timestamp 4]** - Deploying a Test Service & Ingress for validation
+**[Timestamp 5]** - Adding the TLS Annotations to the Ingress Resource
+**[Timestamp 6]** - Validation: Checking the Certificate status & Final HTTPS Test
+
+
+An Ingress Controller is essential for a Kubernetes cluster, especially in a production environment, because it manages all external access to services within the cluster, primarily handling HTTP and HTTPS traffic.
+
+In simple terms, it acts as the cluster's smart front door for web traffic.
+1. Install NGINX Ingress Controller
+# Install the NGINX Ingress Controller
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/cloud/deploy.yaml
+
+Wait a minute, then check the status. NGINX will request a LoadBalancer service, and MetalLB will assign an IP from the pool you defined:
+
+kubectl get svc -n ingress-nginx
+
+2. Install Cert-Manager
+Cert-Manager is required to automatically provision and manage SSL/TLS certificates (from Let's Encrypt).
+
+# 1. Install Custom Resource Definitions (CRDs)
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.2/cert-manager.crds.yaml
+
+# 2. Install the Cert-Manager main components
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.2/cert-manager.yaml
+
+3. Configure the Lets encrypt SSL Issuer
+create file: letsencrypt-issuers.yaml
+# letsencrypt-issuers.yaml
+
+# -----------------------------------------------
+# 1. STAGING ClusterIssuer (For Testing)
+# -----------------------------------------------
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    # IMPORTANT: Use your valid email address
+    email: YOUR_VALID_EMAIL@example.com 
+    # Staging server URL
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+
+---
+
+# -----------------------------------------------
+# 2. PRODUCTION ClusterIssuer (For Live Traffic)
+# -----------------------------------------------
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    # IMPORTANT: Use your valid email address
+    email: YOUR_VALID_EMAIL@example.com 
+    # Production server URL
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+
+Apply the letsencrypt-issuers File
+kubectl apply -f kube/ingress-ssl/letsencrypt-issuers.yaml
+
+Verification
+You can verify that both were created successfully:
+
+kubectl get clusterissuers
+
+4. Deploying a Test Service & Ingress for validation
+
+1. Application Deployment (nginx-app.yaml)
+
+# nginx-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+spec:
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+2. Ingress with Staging HTTPS (nginx-ingress-staging.yaml)
+
+Start by testing with the staging issuer. Remember to replace with your actual public domain name
+
+# nginx-ingress-staging.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-secure-ingress
+  annotations:
+    # 1. Use the STAGING issuer for testing
+    cert-manager.io/cluster-issuer: letsencrypt-staging 
+    # Optional: Force redirect all HTTP traffic to HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  # Define the TLS secret and host
+  tls:
+  - hosts:
+    - # YOUR DOMAIN NAME
+    secretName: nginx-tls-staging-secret  # Cert-Manager will create this secret
+  rules:
+  - host: # YOUR DOMAIN NAME
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-service
+            port:
+              number: 80
+
+Monitor Certificate Status
+# Check the Certificate status (look for READY: True)
+kubectl get certificate nginx-tls-staging-secret
+
+Once it's True, your application is accessible via HTTPS using the staging certificate.
+
+update the configuration change from letsencrypt-staging to letsencrypt-prod.: nginx-ingress.yaml
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-secure-ingress
+  annotations:
+    # 1. Use the STAGING issuer for testing
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Optional: Force redirect all HTTP traffic to HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  # Define the TLS secret and host
+  tls:
+  - hosts:
+    - ipfire-soc.crypto.net.id
+    secretName: ipfire-soc-tls-prod-secret  # Cert-Manager will create this secret
+  rules:
+  - host: ipfire-soc.crypto.net.id
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-service
+            port:
+              number: 80
+
+$ kubectl apply -f kube/ingress-ssl/nginx-ingress.yaml
+
+
