@@ -1,0 +1,384 @@
+============================
+K8 Deploy Wordpress With Ingress SSL
+============================
+
+######################################################
+#1. Setup - Create namespace to isolate the application
+######################################################
+To do this we will create wp-namespace-01.yaml
+# filename: namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wordpress
+  
+Run to apply:
+kubectl apply -f wp-namespace-01.yaml
+######################################################
+#2. Credential - Create Secreet for the MySQL database password
+######################################################
+To do this we will create wp-secret-02.yaml
+# create a secret to store your database password password is  1234567!2025
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-pass
+  namespace: wordpress
+type: Opaque
+stringData:
+  password: 1234567@2025
+
+Run to apply:
+kubectl apply -f wp-secret-02.yaml
+######################################################
+#3. Storage Preparation - Manually Create Host Paths on all the worker nodes
+######################################################
+
+# Run this command on every Worker Node in your cluster to create PV Paths for wordpress & MySQL
+sudo mkdir -p /data/wordpress-data
+sudo mkdir -p /data/mysql-data
+
+######################################################
+#4. MySQL PV - Create Static PersistentVolume (PV) for MySQL
+######################################################
+A. PersistentVolume (PV) for MySQL
+Action: We created a PersistentVolume (PV) to provide a storage volume for the MySQL database.
+Concept: The PV represents a piece of physical storage in the cluster, independent of any pod.
+
+Create file wp-wordpress-PV-mysql-04.yaml: 
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wordpress-pv-mysql
+spec:
+  capacity:
+    storage: 1Gi # <-- This will create 1 Giga PV for MySQL
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: "/data/mysql-data"  # <-- Use a different directory
+
+Run to apply:
+kubectl apply -f wp-wordpress-PV-mysql-04.yaml
+
+######################################################
+#5. MysSQL Server - Deploy MySQL using StatefulSet
+######################################################
+Create Mysql as a stateful and Mysql service
+A. MySQL Deployment with StatefulSet
+Action: We deployed MySQL using a StatefulSet, which manages stateful applications and provides stable identities. The StatefulSet created a PersistentVolumeClaim (PVC) that bound to the MySQL PV, and a pod that was able to access the storage.
+
+B. MySQL Service
+Action: We created a Service for MySQL. The service name (wordpress-mysql) provides a stable internal DNS endpoint for other pods to connect to the database.
+
+Concept: We used a headless service (clusterIP: None) because StatefulSets require it, and it's the best practice for internal communication where a stable network name is more important than a single cluster IP.
+Concept: A StatefulSet is ideal for databases because it ensures pods are created in a specific order and are associated with specific persistent volume
+
+create file wp-mysqlDB-Deployment-05.yaml:
+# 1. MySQL StatefulSet (Manages the Pod)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: wordpress-mysql
+  namespace: wordpress
+spec:
+  # The 'selector' field is required and must match the pod 'labels'.
+  selector:
+    matchLabels:
+      app: wordpress-mysql
+  serviceName: "wordpress-mysql"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        # These labels MUST match the 'selector' above.
+        app: wordpress-mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass
+              key: password
+        - name: MYSQL_DATABASE
+          value: wordpress
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+        - name: mysql-persistent-storage
+          mountPath: /var/lib/mysql
+
+      # The 'volumes' section is correctly indented inside 'template.spec'
+      volumes:
+      - name: mysql-persistent-storage # <--- Matches volumeMounts name
+        persistentVolumeClaim:
+          claimName: mysql-pv-claim # <--- Matches PVC name defined below
+
+---
+# 2. Persistent Volume Claim (PVC)
+# This binds to the statically created PV (Step 4)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pv-claim # <--- Give it a name to match the StatefulSet's volume reference
+  namespace: wordpress
+  labels:
+    app: wordpress-mysql
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: manual # <--- Must match the PV's storageClassName (Step 4)
+
+---
+# 3. Headless Service (Provides stable DNS for StatefulSet)
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress-mysql
+  namespace: wordpress
+  labels:
+    app: wordpress-mysql
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: wordpress-mysql
+  clusterIP: None # This creates a "headless" service (required for StatefulSet)
+
+
+  
+Run to apply:
+kubectl apply -f wp-mysqlDB-Deployment-05.yaml
+
+######################################################
+#6. Wordpress PV - Create Static Persistent Volume (PV) for Wordpress files
+######################################################
+A. PersistentVolume (PV) for WordPress
+Action: We created a second, separate PV for the WordPress application to store its files. This was a critical step, as a single ReadWriteOnce PV cannot be shared by multiple applications.
+
+Concept: Each application that requires its own persistent storage with a ReadWriteOnce access mode must have a dedicated PV.
+
+create file wp-wordpress-PV-06.yaml:
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wordpress-pv-2
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: "/data/wordpress-data"  # <-- Use a path directory for wordpress that create earlier
+	
+Run to apply:
+kubectl apply -f wp-wordpress-PV-06.yaml	
+
+######################################################
+#7. WordpressApp - Deploy WordPress using a Deployment and a NodePort Service
+######################################################
+- Create deployment wordpress as stateful and wordpress service
+create file wp-wordpress-Deployment-App-07.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+  namespace: wordpress
+  labels:
+    app: wordpress
+spec:
+  ports:
+    - port: 80
+  selector:
+    app: wordpress
+  type: NodePort # Or NodePort for a local cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  namespace: wordpress
+  labels:
+    app: wordpress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wordpress
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+    spec:
+      containers:
+      - image: wordpress:latest
+        name: wordpress
+        env:
+        - name: WORDPRESS_DB_HOST
+          value: wordpress-mysql
+        - name: WORDPRESS_DB_USER
+          value: root
+        - name: WORDPRESS_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass
+              key: password
+        ports:
+        - containerPort: 80
+          name: wordpress
+        volumeMounts:
+        - name: wordpress-persistent-storage
+          mountPath: /var/www/html # <-- the data that will mount to PV
+      volumes:
+      - name: wordpress-persistent-storage
+        persistentVolumeClaim:
+          claimName: wp-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wp-pvc
+  namespace: wordpress
+  labels:
+    app: wordpress
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: manual # Matches the PV you will create
+
+Run to apply:
+kubectl apply -f wp-wordpress-Deployment-App-07.yaml
+ 
+######################################################
+#8. SSL Issuer - Deploy the ClusterIssuers for Let's Encrypt Stagging
+######################################################
+A. Install Custom Resource Definition & Cert-Manager main components
+
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.2/cert-manager.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.2/cert-manager.crds.yaml
+
+B. Deploy the letsencrypt Cluster issue
+create file letsencrypt-ssl-cluster-issuer-08.yaml:
+
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: sys@aim.co.id #<-- change with your email
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: sys@aim.co.id #<-- change with your email
+     privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+
+Run to apply:
+kubectl apply -f letsencrypt-ssl-cluster-issuer-08.yaml
+
+######################################################
+#9. Ingress/SSL - Deploy the Ingress to route traffic Wordpress Service
+######################################################
+A. Install NGINX Ingress Controller
+# Install the NGINX Ingress Controller
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/cloud/deploy.yaml
+
+Wait a minute, then check the status. NGINX will request a LoadBalancer service, and MetalLB will assign an IP from the pool you defined:
+
+kubectl get svc -n ingress-nginx
+
+B. Deploy wordpress-ingress without SSL
+
+create file wp-wordpress-ingress-route-nonssl-09.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wordpress-ingress
+  namespace: wordpress
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: ipfire-soc.crypto.net.id #<-- change with your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: wordpress
+            port:
+              number: 80
+
+
+Run to apply:
+kubectl apply -f wp-wordpress-ingress-route-nonssl-09.yaml
+
+C. Deploy wordpress-ingress with SSL
+
+create file wp-wordpress-ingress-route-ssl-09.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wordpress-ingress
+  namespace: wordpress
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod  # Use the staging issuer first! after that change to prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ipfire-soc.crypto.net.id #<-- change with your domain
+      secretName: ipfire-soc-tls-secret  # cert-manager will store the cert here
+  rules:
+  - host: ipfire-soc.crypto.net.id #<-- change with your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: wordpress
+            port:
+              number: 80
+
+
+Run to apply:
+kubectl apply -f wp-wordpress-ingress-route-ssl-09.yaml
+
+
